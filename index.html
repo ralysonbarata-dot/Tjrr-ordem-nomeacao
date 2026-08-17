@@ -488,43 +488,62 @@ function assignFixedPositions(assignments, totalVagas){
   return assignments;
 }
 
-// Simulação (itens 8.13/8.14/14.4 do Edital):
-//  Passo A: os melhores colocados por classificação geral, até a meta de
-//    Ampla Concorrência, são nomeados pela Ampla — MESMO que também sejam
-//    autodeclarados negro/PcD/indígena. Quem tem nota para ser nomeado
-//    pela ampla é nomeado pela ampla; a cota não "rouba" essa vaga dele.
-//  Passo B: as vagas reservadas são preenchidas pelos melhores colocados
-//    autodeclarados de cada cota QUE NÃO entraram na ampla no passo A —
-//    ou seja, quem só entraria pela cota (não pela nota pura).
-//  Passo C: cotas sem candidatos suficientes revertem à ampla concorrência
-//    (itens 6.12, 8.11, 9.10), preenchida pelos próximos da fila geral.
 // Determina, de uma vez por todas, a categoria "canônica" de cada candidato
 // para um dado total de vagas — como se NINGUÉM tivesse qualquer situação
 // especial. Isso é INDEPENDENTE do statusMap: a categoria de um candidato
 // nunca muda por causa de desistência/reposicionamento/exclusão de outro
 // candidato, seja da mesma cota ou de outra.
+//
+// IMPORTANTE sobre estabilidade entre totais diferentes: o cálculo percorre
+// as posições de vaga 1, 2, 3... em ordem, decidindo a cota de cada uma
+// pela TABELA DE POSIÇÕES FIXAS (item acima) — não por um corte "melhores N
+// por nota" recalculado do zero a cada total. Isso garante que a 3ª vaga
+// SEMPRE seja a mesma pessoa (negro), a 2ª SEMPRE a mesma (ampla), etc.,
+// não importa se a simulação está considerando 20, 26 ou 100 vagas no
+// total — aumentar o total só ACRESCENTA gente às posições novas, nunca
+// muda quem já ocupava uma posição anterior (correção de um bug real: o
+// Felipe, já fixado na 3ª vaga como negro, estava sendo redesenhado como
+// ampla concorrência só porque a projeção calculava para 26 vagas).
 function computeCanonical(totalVagas){
-  const targets = computeTargets(totalVagas);
-  const remaining = Object.assign({}, targets);
-  const canonical = {}; // insc -> cota
+  const canonical = {};
+  const used = new Set();
 
-  // Passo A — Ampla Concorrência por mérito puro (item 8.13/8.14/14.4).
-  const acCount = Math.min(remaining.AC, DATA.length);
-  for (let i = 0; i < acCount; i++) canonical[DATA[i].i] = 'AC';
-  remaining.AC -= acCount;
+  const queues = {
+    AC: DATA,
+    Negro: DATA.filter(c => c.cats.includes('Negro')),
+    PcD: DATA.filter(c => c.cats.includes('PcD')),
+    Indigena: DATA.filter(c => c.cats.includes('Indigena')),
+  };
+  const ptr = {AC: 0, Negro: 0, PcD: 0, Indigena: 0};
 
-  // Passo B — cotas reservadas, entre quem sobrou.
-  const leftoverAfterA = DATA.filter(c => !canonical[c.i]);
-  const priorityCats = ['Indigena', 'Negro', 'PcD'];
-  for (const cat of priorityCats){
-    let count = 0;
-    for (const c of leftoverAfterA){
-      if (count >= remaining[cat]) break;
-      if (canonical[c.i]) continue;
-      if (c.cats.includes(cat)){ canonical[c.i] = cat; count++; }
+  function nextFrom(cat){
+    const q = queues[cat];
+    while (ptr[cat] < q.length && used.has(q[ptr[cat]].i)) ptr[cat]++;
+    if (ptr[cat] < q.length){ const c = q[ptr[cat]]; ptr[cat]++; return c; }
+    return null;
+  }
+
+  for (let k = 1; k <= totalVagas; k++){
+    let cat = scheduleCategoryAt(k);
+    let c = nextFrom(cat);
+    if (!c && cat !== 'AC'){
+      // Cota sem candidatos suficientes: reverte à ampla concorrência
+      // (itens 6.12, 8.11, 9.10). Extremamente improvável neste universo
+      // de candidatos, mas tratado por segurança.
+      cat = 'AC';
+      c = nextFrom('AC');
     }
+    if (c){ canonical[c.i] = cat; used.add(c.i); }
   }
   return canonical;
+}
+
+// A qual cota pertence, pela tabela de posições fixas, a k-ésima vaga aberta.
+function scheduleCategoryAt(k){
+  if (SCHEDULE.negro.includes(k)) return 'Negro';
+  if (SCHEDULE.pcd.includes(k)) return 'PcD';
+  if (SCHEDULE.indigena.includes(k)) return 'Indigena';
+  return 'AC';
 }
 
 // Simulação: a categoria de cada candidato é sempre a canônica (fixa). Se o
