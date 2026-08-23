@@ -709,41 +709,23 @@ const STATUS_LABELS = {
 let lastResult = null;
 
 function renderNextPanel(totalVagas){
-  const PREVIEW_COUNT = 5;
-  
-  // Simulamos uma margem maior adiante para garantir que encontraremos 
-  // 5 candidatos com status 'aguardando', mesmo se houver pessoas com outros status no caminho.
-  const extended = simulate(totalVagas + 100, statusMap);
-  
-  const allUpcoming = [];
+function renderNextPanel(totalVagas){
+  const PREVIEW = 6;
+  const extended = simulate(totalVagas + PREVIEW, statusMap);
+  const upcoming = [];
   for (const c of DATA){
     const a = extended.assignments[c.i];
     if (a && a.vaga > totalVagas){
-      allUpcoming.push({vaga: a.vaga, cat: a.cat, nome: c.n, insc: c.i});
+      upcoming.push({vaga: a.vaga, cat: a.cat, nome: c.n, insc: c.i});
     }
   }
-  
-  // Ordena pela ordem da vaga projetada
-  allUpcoming.sort((a,b) => a.vaga - b.vaga);
-  
-  // Filtra estritamente apenas quem está com status 'aguardando' e pega os primeiros 5
-  const upcomingAguardando = [];
-  for (const u of allUpcoming){
-    const st = statusMap[u.insc] || 'aguardando';
-    if (st === 'aguardando'){
-      upcomingAguardando.push(u);
-      if (upcomingAguardando.length === PREVIEW_COUNT) break;
-    }
-  }
-  
+  upcoming.sort((a,b) => a.vaga - b.vaga);
   const grid = document.getElementById('nextGrid');
-  
-  if (upcomingAguardando.length === 0){
-    grid.innerHTML = '<div class="hint">Não há mais candidatos aguardando para projetar novas nomeações.</div>';
+  if (upcoming.length === 0){
+    grid.innerHTML = '<div class="hint">Não há mais candidatos elegíveis para projetar novas vagas além do total simulado.</div>';
     return;
   }
-  
-  grid.innerHTML = upcomingAguardando.map(u => {
+  grid.innerHTML = upcoming.slice(0, PREVIEW).map(u => {
     const lbl = u.cat==='Indigena' ? 'Indígena' : u.cat;
     return `<div class="next-item"><span class="vn">${u.vaga}ª vaga</span><span class="cat catpill ${u.cat}">${lbl}</span><span class="nm">${u.nome}</span></div>`;
   }).join('');
