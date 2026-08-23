@@ -710,23 +710,29 @@ let lastResult = null;
 
 function renderNextPanel(totalVagas){
   const PREVIEW = 6;
-  const extended = simulate(totalVagas + PREVIEW, statusMap);
+  // Simulamos um pouco mais adiante (ex: +30) para garantir que encontremos 
+  // 3 candidatos "aguardando", mesmo se houver algum com status diferente no meio.
+  const extended = simulate(totalVagas + 30, statusMap);
   const upcoming = [];
+  
   for (const c of DATA){
     const a = extended.assignments[c.i];
     const st = statusMap[c.i] || 'aguardando'; // Pega o status atual do candidato
-    if (a && a.vaga > totalVagas){
-      // Apenas inclui se tiver vaga projetada além do total E estiver aguardando
+    
+    // Apenas inclui se tiver vaga projetada além do total E estiver aguardando
     if (a && a.vaga > totalVagas && st === 'aguardando'){
       upcoming.push({vaga: a.vaga, cat: a.cat, nome: c.n, insc: c.i});
     }
   }
+  
   upcoming.sort((a,b) => a.vaga - b.vaga);
   const grid = document.getElementById('nextGrid');
+  
   if (upcoming.length === 0){
-    grid.innerHTML = '<div class="hint">Não há mais candidatos elegíveis para projetar novas vagas além do total simulado.</div>';
+    grid.innerHTML = '<div class="hint">Não há mais candidatos aguardando para projetar novas vagas além do total simulado.</div>';
     return;
   }
+  
   grid.innerHTML = upcoming.slice(0, PREVIEW).map(u => {
     const lbl = u.cat==='Indigena' ? 'Indígena' : u.cat;
     return `<div class="next-item"><span class="vn">${u.vaga}ª vaga</span><span class="cat catpill ${u.cat}">${lbl}</span><span class="nm">${u.nome}</span></div>`;
