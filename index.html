@@ -709,38 +709,41 @@ const STATUS_LABELS = {
 let lastResult = null;
 
 function renderNextPanel(totalVagas){
-  const LIMITE_VAGAS = 25;
-
-  // Se o total de vagas simuladas já atingiu ou passou de 25, encerra
-  if (totalVagas >= LIMITE_VAGAS) {
-    const grid = document.getElementById('nextGrid');
-    grid.innerHTML = '<div class="hint">O total de vagas simuladas já atingiu ou ultrapassou a 25ª vaga.</div>';
-    return;
-  }
-
-  // Simula com folga para calcular corretamente
-  const extended = simulate(LIMITE_VAGAS + 10, statusMap);
-  const upcoming = [];
+  const PREVIEW_COUNT = 5;
   
+  // Simulamos uma margem maior adiante para garantir que encontraremos 
+  // 5 candidatos com status 'aguardando', mesmo se houver pessoas com outros status no caminho.
+  const extended = simulate(totalVagas + 100, statusMap);
+  
+  const allUpcoming = [];
   for (const c of DATA){
     const a = extended.assignments[c.i];
-    const st = statusMap[c.i] || 'aguardando';
-    
-    // Filtra apenas vagas estritamente entre o total atual e a 25ª vaga, e que estejam "aguardando"
-    if (a && a.vaga > totalVagas && a.vaga <= LIMITE_VAGAS && st === 'aguardando'){
-      upcoming.push({vaga: a.vaga, cat: a.cat, nome: c.n, insc: c.i});
+    if (a && a.vaga > totalVagas){
+      allUpcoming.push({vaga: a.vaga, cat: a.cat, nome: c.n, insc: c.i});
     }
   }
   
-  upcoming.sort((a,b) => a.vaga - b.vaga);
+  // Ordena pela ordem da vaga projetada
+  allUpcoming.sort((a,b) => a.vaga - b.vaga);
+  
+  // Filtra estritamente apenas quem está com status 'aguardando' e pega os primeiros 5
+  const upcomingAguardando = [];
+  for (const u of allUpcoming){
+    const st = statusMap[u.insc] || 'aguardando';
+    if (st === 'aguardando'){
+      upcomingAguardando.push(u);
+      if (upcomingAguardando.length === PREVIEW_COUNT) break;
+    }
+  }
+  
   const grid = document.getElementById('nextGrid');
   
-  if (upcoming.length === 0){
-    grid.innerHTML = '<div class="hint">Não há mais candidatos aguardando nas próximas vagas até a 25ª posição.</div>';
+  if (upcomingAguardando.length === 0){
+    grid.innerHTML = '<div class="hint">Não há mais candidatos aguardando para projetar novas nomeações.</div>';
     return;
   }
   
-  grid.innerHTML = upcoming.map(u => {
+  grid.innerHTML = upcomingAguardando.map(u => {
     const lbl = u.cat==='Indigena' ? 'Indígena' : u.cat;
     return `<div class="next-item"><span class="vn">${u.vaga}ª vaga</span><span class="cat catpill ${u.cat}">${lbl}</span><span class="nm">${u.nome}</span></div>`;
   }).join('');
