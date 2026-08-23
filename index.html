@@ -714,7 +714,10 @@ function renderNextPanel(totalVagas){
   const upcoming = [];
   for (const c of DATA){
     const a = extended.assignments[c.i];
+    const st = statusMap[c.i] || 'aguardando'; // Pega o status atual do candidato
     if (a && a.vaga > totalVagas){
+      // Apenas inclui se tiver vaga projetada além do total E estiver aguardando
+    if (a && a.vaga > totalVagas && st === 'aguardando'){
       upcoming.push({vaga: a.vaga, cat: a.cat, nome: c.n, insc: c.i});
     }
   }
