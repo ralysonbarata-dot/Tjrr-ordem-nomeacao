@@ -711,7 +711,7 @@ let lastResult = null;
 function renderNextPanel(totalVagas){
   const PREVIEW = 6;
   const extended = simulate(totalVagas + PREVIEW, statusMap);
-  const upcoming = [];
+  const upcoming = result.filter(r => !r.isProvida && !isOccupiedStatus(r.candidate.st));
   for (const c of DATA){
     const a = extended.assignments[c.i];
     if (a && a.vaga > totalVagas){
