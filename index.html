@@ -152,7 +152,7 @@ footer .rights{font-weight:600;color:var(--navy);}
       </label>
     </div>
     <div class="hint" style="margin-top:12px;">Use o seletor "Situação" de cada linha para marcar Nomeado / Empossado / Desistente / Não tomou posse / Reposicionamento / Excluído. Nomeado e Empossado travam a vaga do candidato. Nas demais situações, a vaga é liberada e a linha mostra automaticamente para qual candidato ela foi redistribuída.</div>
-    <label class="f" style="margin-top:14px;">Próximas nomeações (projeção)</label>
+    <label class="f" style="margin-top:14px;">Próximos da fila (ainda aguardando)</label>
     <div class="next-grid" id="nextGrid"></div>
   </div>
 </div>
@@ -714,19 +714,32 @@ function renderNextPanel(totalVagas){
   const upcoming = [];
   for (const c of DATA){
     const a = extended.assignments[c.i];
-    if (a && a.vaga > totalVagas){
+    const st = statusMap[c.i] || 'aguardando';
+
+    // O painel "Próximas nomeações" mostra somente candidatos
+    // que ainda aguardam nomeação. Nomeados e empossados ficam
+    // no histórico/tabela, mas não aparecem como próximos.
+    if (a && a.vaga > totalVagas && !FINAL_STATUSES.includes(st)){
       upcoming.push({vaga: a.vaga, cat: a.cat, nome: c.n, insc: c.i});
     }
   }
+  // A ordenação por a.vaga ainda reflete corretamente a ordem em que esses
+  // candidatos seriam chamados (números menores = chamados primeiro), mesmo
+  // quando essa vaga manteve a numeração canônica original por causa de uma
+  // redistribuição. Mas o número em si (ex.: 25ª, 26ª) não deve ser exibido
+  // como se fosse a "vaga" real do candidato: ele é só um artefato interno
+  // da simulação estendida (totalVagas + PREVIEW) usado para ordenar. O que
+  // o painel comunica é a posição desse candidato na fila de espera daqui
+  // para frente — 1º da fila, 2º da fila etc. — não uma vaga projetada.
   upcoming.sort((a,b) => a.vaga - b.vaga);
   const grid = document.getElementById('nextGrid');
   if (upcoming.length === 0){
-    grid.innerHTML = '<div class="hint">Não há mais candidatos elegíveis para projetar novas vagas além do total simulado.</div>';
+    grid.innerHTML = '<div class="hint">Não há mais candidatos elegíveis para projetar além do total simulado.</div>';
     return;
   }
-  grid.innerHTML = upcoming.slice(0, PREVIEW).map(u => {
+  grid.innerHTML = upcoming.slice(0, PREVIEW).map((u, idx) => {
     const lbl = u.cat==='Indigena' ? 'Indígena' : u.cat;
-    return `<div class="next-item"><span class="vn">${u.vaga}ª vaga</span><span class="cat catpill ${u.cat}">${lbl}</span><span class="nm">${u.nome}</span></div>`;
+    return `<div class="next-item"><span class="vn">${idx+1}º da fila</span><span class="cat catpill ${u.cat}">${lbl}</span><span class="nm">${u.nome}</span></div>`;
   }).join('');
 }
 
