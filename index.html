@@ -710,16 +710,22 @@ let lastResult = null;
 
 function renderNextPanel(totalVagas){
   const PREVIEW = 6;
-  const extended = simulate(totalVagas + PREVIEW, statusMap);
+  // O painel não deve depender do número de vagas providas. Enquanto a
+  // situação do candidato continuar "Aguardando" (não for marcada como
+  // Nomeado/Empossado), ele deve seguir aparecendo aqui na ordem da fila —
+  // mesmo que a vaga calculada já esteja dentro do total de vagas providas.
+  // Por isso simulamos o universo inteiro de candidatos (não apenas
+  // totalVagas + PREVIEW) e filtramos só por situação, não por número de vaga.
+  const full = simulate(DATA.length, statusMap);
   const upcoming = [];
   for (const c of DATA){
-    const a = extended.assignments[c.i];
+    const a = full.assignments[c.i];
     const st = statusMap[c.i] || 'aguardando';
 
     // O painel "Próximas nomeações" mostra somente candidatos
     // que ainda aguardam nomeação. Nomeados e empossados ficam
     // no histórico/tabela, mas não aparecem como próximos.
-    if (a && a.vaga > totalVagas && !FINAL_STATUSES.includes(st)){
+    if (a && !FINAL_STATUSES.includes(st)){
       upcoming.push({vaga: a.vaga, cat: a.cat, nome: c.n, insc: c.i});
     }
   }
@@ -728,7 +734,7 @@ function renderNextPanel(totalVagas){
   // quando essa vaga manteve a numeração canônica original por causa de uma
   // redistribuição. Mas o número em si (ex.: 25ª, 26ª) não deve ser exibido
   // como se fosse a "vaga" real do candidato: ele é só um artefato interno
-  // da simulação estendida (totalVagas + PREVIEW) usado para ordenar. O que
+  // da simulação usado para ordenar. O que
   // o painel comunica é a posição desse candidato na fila de espera daqui
   // para frente — 1º da fila, 2º da fila etc. — não uma vaga projetada.
   upcoming.sort((a,b) => a.vaga - b.vaga);
