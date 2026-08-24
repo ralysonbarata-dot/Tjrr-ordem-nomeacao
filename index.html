@@ -807,23 +807,14 @@ function render(){
       rowClass = 'cr';
       vagaCell = `<span class="catpill CR">—</span>`;
       // Contrafactual: o que aconteceria com ESTE candidato especificamente
-      // se só a exclusão dele fosse desfeita. Também desfazemos a exclusão
-      // de OUTROS "desistentes" que são, eles mesmos, SUBSTITUTOS (não
-      // titulares originais/canônicos de uma cota) — do contrário, a
-      // desistência de um substituto mais bem colocado "rouba" a posição
-      // de fila de quem desistiu depois dele (ex.: Eddy e Jordana). Já um
-      // desistente que É o titular canônico (ex.: a Laura, titular
-      // original da vaga de PcD) NÃO tem sua exclusão desfeita aqui —
-      // senão ela "reivindicaria" de volta a própria vaga, fazendo
-      // desaparecer a vacância que o substituto dela (Alexssandro) estava
-      // preenchendo. Quem nunca chegou a tomar posse (não posse,
-      // reposicionamento, exclusão) continua excluído do mesmo jeito, pois
-      // nunca ocupou vaga alguma para começo de conversa.
+      // se só a exclusão dele fosse desfeita. As exclusões de todos os
+      // outros candidatos (incluindo substitutos anteriores na mesma
+      // cadeia, como o Caio e o Eddy no caso da Martha) permanecem como
+      // estão — é isso que garante que a vaga volte exatamente para quem a
+      // tinha antes desta exclusão específica, mesmo em cadeias longas de
+      // desistências sucessivas.
       const statusWithoutThis = Object.assign({}, statusMap);
       delete statusWithoutThis[c.i];
-      for (const insc in statusWithoutThis){
-        if (statusWithoutThis[insc] === 'desistente' && !canonical[insc]) delete statusWithoutThis[insc];
-      }
       const counterfactual = simulate(totalVagas, statusWithoutThis);
       const wouldBeAssign = counterfactual.assignments[c.i];
       if (wouldBeAssign){
