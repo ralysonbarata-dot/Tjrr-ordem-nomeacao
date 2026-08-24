@@ -67,6 +67,9 @@ button{font-family:'Inter';font-weight:600;font-size:12px;border:none;border-rad
 .next-panel{background:var(--paper-2);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-bottom:16px;}
 .next-panel h3{margin:0 0 10px;font-size:11.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--navy-2);font-family:'IBM Plex Mono',monospace;font-weight:500;}
 .next-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:8px;}
+.upcoming-vagas{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+.upcoming-vaga-item{display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:6px;padding:5px 9px;font-size:12px;background:var(--paper);}
+.upcoming-vaga-item .vn{font-family:'IBM Plex Mono',monospace;color:var(--navy);font-weight:700;font-size:11.5px;}
 .next-col{border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--paper);}
 .next-col h4{margin:0 0 8px;font-size:11px;}
 .next-item{padding:5px 0;font-size:12px;border-top:1px solid var(--line);}
@@ -154,6 +157,8 @@ footer .rights{font-weight:600;color:var(--navy);}
         <input type="checkbox" id="onlyProvidas" style="width:auto;"> mostrar apenas vagas providas
       </label>
     </div>
+    <label class="f" style="margin-top:14px;">Próximas vagas a abrir (por cota)</label>
+    <div class="upcoming-vagas" id="upcomingVagasGrid"></div>
     <label class="f" style="margin-top:14px;">Próximos da fila (ainda aguardando)</label>
     <div class="next-grid" id="nextGrid"></div>
   </div>
@@ -710,6 +715,18 @@ const STATUS_LABELS = {
 
 let lastResult = null;
 
+function renderUpcomingVagasPanel(totalVagas){
+  const N = 5;
+  const grid = document.getElementById('upcomingVagasGrid');
+  const items = [];
+  for (let k = totalVagas + 1; k <= totalVagas + N; k++){
+    const cat = scheduleCategoryAt(k);
+    const lbl = cat === 'Indigena' ? 'Indígena' : (cat === 'AC' ? 'Ampla Concorrência' : cat);
+    items.push(`<div class="upcoming-vaga-item"><span class="vn">${k}ª vaga</span><span class="catpill ${cat}">${lbl}</span></div>`);
+  }
+  grid.innerHTML = items.join('');
+}
+
 function renderNextPanel(totalVagas){
   const PREVIEW = 5;
   // O painel não deve depender do número de vagas providas. Enquanto a
@@ -771,6 +788,7 @@ function render(){
   document.getElementById('summaryBox').innerHTML =
     `<b>${nomeadosCount}</b> de <b>${totalVagas}</b> vaga(s) abertas já providas (Nomeado/Empossado) · <b>${result.providas}</b> vaga(s) providas nesta simulação · <b>${DATA.length - result.providas}</b> candidato(s) em cadastro de reserva ou fora da disputa.`;
 
+  renderUpcomingVagasPanel(totalVagas);
   renderNextPanel(totalVagas);
 
   const tbody = document.getElementById('tbody');
