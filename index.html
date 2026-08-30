@@ -49,6 +49,13 @@ fieldset.edit-fields:disabled{opacity:.5;}
 @media (max-width:840px){ .controls{grid-template-columns:1fr;} }
 .panel{background:var(--paper-2);border:1px solid var(--line);border-radius:8px;padding:14px 16px;}
 .panel h3{margin:0 0 10px;font-size:11.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--navy-2);font-family:'IBM Plex Mono',monospace;font-weight:500;}
+label.f{display:block;font-size:12px;color:var(--ink-soft);margin:0 0 4px;}
+input[type=number]{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:6px;font-size:13px;font-family:'IBM Plex Mono',monospace;background:var(--paper-2);color:var(--ink);margin-bottom:8px;}
+.forecast-box{margin-top:10px;padding-top:10px;border-top:1px dashed var(--line);}
+.forecast-title{font-family:'IBM Plex Mono',monospace;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--navy-2);margin-bottom:6px;}
+.forecast-list{display:flex;flex-direction:column;gap:4px;}
+.forecast-item{display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:3px 6px;border-radius:5px;background:var(--paper-2);border:1px solid var(--line);}
+.forecast-item .fnum{font-family:'IBM Plex Mono',monospace;color:var(--ink-soft);}
 .quota-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 10px;margin-top:6px;font-size:12px;}
 .quota-grid div{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px dashed var(--line);}
 .quota-grid b{color:var(--navy);}
@@ -107,7 +114,6 @@ select.statusSelect{width:100%;padding:4px 6px;border:1px solid var(--line);bord
 select.statusSelect:disabled{opacity:.6;cursor:not-allowed;}
 select.statusSelect.st-desistente{border-color:var(--desistente);color:var(--desistente);}
 select.statusSelect.st-final_fila{border-color:var(--finalfila);color:var(--finalfila);}
-select.statusSelect.st-convocado{border-color:var(--convocado);color:var(--convocado);}
 select.statusSelect.st-nomeado{border-color:var(--nomeado);color:var(--nomeado);font-weight:600;}
 select.statusSelect.st-empossado{border-color:var(--nomeado);color:var(--nomeado);font-weight:700;}
 select.statusSelect.st-posse_sem_efeito{border-color:var(--rev);color:var(--rev);}
@@ -151,6 +157,8 @@ footer .rights{font-weight:600;color:var(--navy);}
 <div class="controls">
   <div class="panel">
     <h3 id="specTitle">Especialidade</h3>
+    <label class="f">Vagas a considerar providas (simulação)</label>
+    <input type="number" id="vagasInput" min="1" value="1">
     <div class="quota-grid" id="quotaGrid"></div>
     <div class="legend">
       <span><i class="dot" style="background:var(--negro)"></i>Negro</span>
@@ -158,7 +166,8 @@ footer .rights{font-weight:600;color:var(--navy);}
       <span><i class="dot" style="background:var(--indig)"></i>Indígena</span>
       <span><i class="dot" style="background:var(--sj)"></i>Sub judice</span>
     </div>
-    <div class="hint">"Ordem de Nomeação" é a posição de chamamento dentro desta especialidade (1ª, 2ª...), já com a cota aplicada. Candidatos além do total de vagas ficam em CR (cadastro de reserva).</div>
+    <div class="hint" id="forecastHint">"Ordem de Nomeação" é a posição de chamamento dentro desta especialidade (1ª, 2ª...), já com a cota aplicada. Candidatos além do total de vagas ficam em CR (cadastro de reserva). Acima do número oficial do Edital, a cota das próximas vagas é estimada pela mesma fórmula legal (20% negro, 10% PcD, 3% indígena), já que não há número oficial publicado além do quadro do item 3.</div>
+    <div class="forecast-box" id="forecastBox"></div>
   </div>
   <div class="panel">
     <h3>Pesquisar e Marcar Status <span id="syncStatus" style="float:right;font-family:'IBM Plex Mono',monospace;font-size:10.5px;text-transform:none;letter-spacing:0;font-weight:400;">—</span></h3>
@@ -256,156 +265,175 @@ function isFinalSt(st){ return FINAL_STATUSES.includes(statusValue(st)); }
 //      -> PcD -> ampla (item 9.10); Negro e PcD revertem direto
 //      pra ampla (itens 8.11 e 6.12).
 // ------------------------------------------------------------
-const canonicalCache = {};
-function computeCanonical(spec){
-  if (canonicalCache[spec]) return canonicalCache[spec];
-  const D = DATA_ALL[spec];
+// ------------------------------------------------------------
+// Fórmula geral (usada apenas para extrapolar ALÉM do número
+// oficial do Edital): 20% negro, 10% PcD (sempre arredondado
+// pra cima), 3% indígena (só a partir de N>=10). Confirmado
+// que bate com a tabela oficial do item 3 em todos os casos,
+// EXCETO Apoio à Gestão em N=10 (a FGV arredondou Indígena pra
+// cima mesmo com fração <0,5) — por isso SEMPRE usamos os
+// números oficiais fixos quando N é igual ao valor do Edital,
+// e só usamos a fórmula para N diferente disso.
+// ------------------------------------------------------------
+function roundHalfUp(x){ return Math.floor(x + 0.5); }
+function computeTargetsForN(N){
+  const indigena = N >= 10 ? roundHalfUp(N * 0.03) : 0;
+  const negro = N >= 3 ? roundHalfUp(N * 0.20) : 0;
+  const pcd = Math.ceil(N * 0.10);
+  const ac = Math.max(0, N - indigena - negro - pcd);
+  return {AC: ac, Negro: negro, Indigena: indigena, PcD: pcd};
+}
+function baseVagasOf(spec){
   const t = TARGETS[spec];
-  const used = new Set();
-  const assignments = {};
-
-  // 1) Ampla concorrência por mérito puro
-  let acCount = 0;
-  for (const c of D){
-    if (acCount >= t.AC) break;
-    assignments[c.i] = {cat:'AC', reverted:false};
-    used.add(c.i);
-    acCount++;
-  }
-
-  // 2) Cotas reservadas, da mais escassa pra mais numerosa
-  function fillReserved(catName, target){
-    let filled = 0;
-    for (const c of D){
-      if (filled >= target) break;
-      if (used.has(c.i)) continue;
-      if (c.cats.includes(catName)){
-        assignments[c.i] = {cat:catName, reverted:false};
-        used.add(c.i);
-        filled++;
-      }
-    }
-    return target - filled;
-  }
-  function revertToAC(qty){
-    let filled = 0;
-    for (const c of D){
-      if (filled >= qty) break;
-      if (used.has(c.i)) continue;
-      assignments[c.i] = {cat:'AC', reverted:true};
-      used.add(c.i);
-      filled++;
-    }
-    return qty - filled;
-  }
-
-  let indigShort = fillReserved('Indigena', t.Indigena);
-  if (indigShort > 0){
-    indigShort = fillReserved('Negro', indigShort); // revertido pra Negro (mantém used ampliado)
-  }
-  // (nota: fillReserved acima usa "target" como novo alvo, mas precisamos
-  // marcar esses extras com reverted+origem; simplificamos: se sobrou,
-  // tenta PcD, depois ampla)
-  if (indigShort > 0){
-    indigShort = fillReserved('PcD', indigShort);
-  }
-  if (indigShort > 0){
-    indigShort = revertToAC(indigShort);
-  }
-
-  let negroShort = fillReserved('Negro', t.Negro);
-  if (negroShort > 0) negroShort = revertToAC(negroShort);
-
-  let pcdShort = fillReserved('PcD', t.PcD);
-  if (pcdShort > 0) pcdShort = revertToAC(pcdShort);
-
-  canonicalCache[spec] = assignments;
-  return assignments;
+  return t.AC + t.Negro + t.Indigena + t.PcD;
+}
+function getTargetsFor(spec, N){
+  if (N === baseVagasOf(spec)) return TARGETS[spec];
+  return computeTargetsForN(N);
 }
 
-function seatNumbersOf(spec){
+// ------------------------------------------------------------
+// runAllocation(): motor único, usado tanto pra categorização
+// canônica (smap vazio) quanto pra simulação com status
+// (smap preenchido) — evita duplicar a lógica de repasse.
+// Segue os itens 8.13/8.14/6.7/9.11 do Edital:
+//   1) Ampla Concorrência é preenchida pelos TOP N da
+//      classificação geral, por mérito puro, pulando quem
+//      estiver com status de vacância.
+//   2) As vagas reservadas (Indígena > Negro > PcD, da mais
+//      escassa pra mais numerosa) são preenchidas pelos
+//      melhores autodeclarados daquela cota ainda não usados.
+//   3) CORREÇÃO AUTOMÁTICA (swap): se uma cota ficaria sem
+//      candidato só porque o(s) candidato(s) dela já foram
+//      "presos" na ampla por mérito, o sistema troca: tira o
+//      candidato da ampla, coloca na cota, e repõe a vaga da
+//      ampla com o próximo da fila geral. Isso evita reverter
+//      uma cota pra ampla quando, na real, existe candidato
+//      dela disponível — só que ele estava computado na ampla.
+//   4) Só depois de tentar a troca é que a cota reverte de
+//      verdade: Indígena -> Negro -> PcD -> ampla (item 9.10);
+//      Negro e PcD revertem direto pra ampla (itens 8.11/6.12).
+// ------------------------------------------------------------
+function runAllocation(spec, N, smap){
+  smap = smap || {};
   const D = DATA_ALL[spec];
-  const canonical = computeCanonical(spec);
+  const t = getTargetsFor(spec, N);
+  const used = new Set();
+  const assignments = {};
+  const beneficiaryOf = {};
+
+  function fillQueue(pool, target, catLabel, reverted, initialPending){
+    let filled = 0;
+    let pending = initialPending ? initialPending.slice() : [];
+    for (const c of pool){
+      if (filled >= target) break;
+      if (used.has(c.i)) continue;
+      if (isExcludedSt(smap[c.i])) { pending.push(c.i); continue; }
+      assignments[c.i] = {cat: catLabel, reverted: reverted};
+      used.add(c.i);
+      filled++;
+      for (const p of pending) beneficiaryOf[p] = c.i;
+      pending = [];
+    }
+    return {short: target - filled, pending};
+  }
+
+  function trySwap(catName, reverted){
+    for (let idx = D.length - 1; idx >= 0; idx--){
+      const c = D[idx];
+      const a = assignments[c.i];
+      if (a && a.cat === 'AC' && !a.reverted && c.cats.includes(catName)){
+        delete assignments[c.i];
+        used.delete(c.i);
+        assignments[c.i] = {cat: catName, reverted: !!reverted};
+        used.add(c.i);
+        for (const cc of D){
+          if (used.has(cc.i)) continue;
+          if (isExcludedSt(smap[cc.i])) continue;
+          assignments[cc.i] = {cat:'AC', reverted:false};
+          used.add(cc.i);
+          break;
+        }
+        return c.i;
+      }
+    }
+    return null;
+  }
+  function fillWithSwap(pool, target, catLabel, reverted, initialPending){
+    let r = fillQueue(pool, target, catLabel, reverted, initialPending);
+    while (r.short > 0){
+      const swapped = trySwap(catLabel, reverted);
+      if (!swapped) break;
+      if (r.pending.length){ for (const p of r.pending) beneficiaryOf[p] = swapped; r.pending = []; }
+      r.short -= 1;
+    }
+    return r;
+  }
+
+  // 1) Ampla concorrência por mérito puro (item 8.14)
+  fillQueue(D, t.AC, 'AC', false);
+
+  // 2) Indígena, com correção automática e reversão em cascata
+  let r = fillWithSwap(D.filter(c => c.cats.includes('Indigena')), t.Indigena, 'Indigena', false);
+  if (r.short > 0) r = fillWithSwap(D.filter(c => c.cats.includes('Negro')), r.short, 'Negro', true, r.pending);
+  if (r.short > 0) r = fillWithSwap(D.filter(c => c.cats.includes('PcD')), r.short, 'PcD', true, r.pending);
+  if (r.short > 0) r = fillQueue(D, r.short, 'AC', true, r.pending);
+
+  // 3) Negro, com correção automática, revertendo pra ampla se esgotar
+  let rn = fillWithSwap(D.filter(c => c.cats.includes('Negro')), t.Negro, 'Negro', false);
+  if (rn.short > 0) rn = fillQueue(D, rn.short, 'AC', true, rn.pending);
+
+  // 4) PcD, com correção automática, revertendo pra ampla se esgotar
+  let rp = fillWithSwap(D.filter(c => c.cats.includes('PcD')), t.PcD, 'PcD', false);
+  if (rp.short > 0) rp = fillQueue(D, rp.short, 'AC', true, rp.pending);
+
+  return {assignments, beneficiaryOf, targets: t};
+}
+
+function computeCanonical(spec, N){
+  return runAllocation(spec, N, {}).assignments;
+}
+function seatNumbersOf(spec, N){
+  const D = DATA_ALL[spec];
+  const canonical = computeCanonical(spec, N);
   const winners = D.filter(c => canonical[c.i]).sort((a,b) => a.p - b.p);
   const seatOf = {};
   winners.forEach((c, idx) => { seatOf[c.i] = idx + 1; });
   return seatOf;
 }
-
-// ------------------------------------------------------------
-// simulate(): aplica desistência/final de fila sobre a
-// categorização canônica, repondo a vaga com o próximo
-// autodeclarado disponível da MESMA cota (itens 6.17/8.15/9.9);
-// se a cota se esgotar, reverte conforme 6.12/8.11/9.10.
-// A numeração da vaga (seatNumber) é herdada de quem foi
-// substituído, preservando identidade mesmo em cadeias de
-// substituição.
-// ------------------------------------------------------------
-function simulate(spec, smap){
-  smap = smap || {};
+function simulate(spec, N, smap){
+  const result = runAllocation(spec, N, smap);
+  const canonical = computeCanonical(spec, N);
+  const seatOf = seatNumbersOf(spec, N);
   const D = DATA_ALL[spec];
-  const canonical = computeCanonical(spec);
-  const seatOf = seatNumbersOf(spec);
 
-  const assignments = {};
-  const beneficiaryOf = {};
-  const filledSeatOf = {};
-  const vacated = {Indigena:[], Negro:[], PcD:[], AC:[]};
-
-  for (const c of D){
-    const can = canonical[c.i];
-    if (!can) continue;
-    if (isExcludedSt(smap[c.i])) vacated[can.cat].push(c);
-    else assignments[c.i] = {cat: can.cat, reverted: can.reverted};
+  const canonicalByCat = {AC:[], Negro:[], PcD:[], Indigena:[]};
+  for (const c of D){ const can = canonical[c.i]; if (can) canonicalByCat[can.cat].push(c); }
+  const currentByCat = {AC:[], Negro:[], PcD:[], Indigena:[]};
+  for (const c of D){ const a = result.assignments[c.i]; if (a) currentByCat[a.cat].push(c); }
+  for (const cat of ['AC','Negro','PcD','Indigena']){
+    currentByCat[cat].forEach((c, idx) => {
+      const canonicalCounterpart = canonicalByCat[cat][idx];
+      result.assignments[c.i].vaga = canonicalCounterpart ? seatOf[canonicalCounterpart.i] : null;
+    });
   }
-
-  const notYetCanonical = D.filter(c => !canonical[c.i] && !isExcludedSt(smap[c.i]));
-  const usedForRefill = new Set();
-
-  function fillFrom(vacList, matchFn, catLabel, reverted){
-    const out = [];
-    for (const vac of vacList){
-      let found = null;
-      for (const c of notYetCanonical){
-        if (usedForRefill.has(c.i)) continue;
-        if (matchFn(c)) { found = c; break; }
-      }
-      if (found){
-        assignments[found.i] = {cat: catLabel, reverted: reverted};
-        usedForRefill.add(found.i);
-        beneficiaryOf[vac.i] = found.i;
-        filledSeatOf[found.i] = vac.i;
-      } else {
-        out.push(vac);
-      }
+  return result;
+}
+function forecastNext(spec, N, count){
+  const list = [];
+  let prev = getTargetsFor(spec, N);
+  const D = DATA_ALL[spec];
+  for (let k = 1; k <= count; k++){
+    if (N + k > D.length) break;
+    const next = getTargetsFor(spec, N + k);
+    let cat = 'AC';
+    for (const c of ['Indigena','Negro','PcD','AC']){
+      if ((next[c]||0) > (prev[c]||0)) { cat = c; break; }
     }
-    return out;
+    list.push({vagaNum: N + k, cat});
+    prev = next;
   }
-
-  let rem = vacated.Indigena;
-  rem = fillFrom(rem, c => c.cats.includes('Indigena'), 'Indigena', false);
-  if (rem.length) rem = fillFrom(rem, c => c.cats.includes('Negro'), 'Negro', true);
-  if (rem.length) rem = fillFrom(rem, c => c.cats.includes('PcD'), 'PcD', true);
-  if (rem.length) rem = fillFrom(rem, () => true, 'AC', true);
-
-  rem = vacated.Negro;
-  rem = fillFrom(rem, c => c.cats.includes('Negro'), 'Negro', false);
-  if (rem.length) rem = fillFrom(rem, () => true, 'AC', true);
-
-  rem = vacated.PcD;
-  rem = fillFrom(rem, c => c.cats.includes('PcD'), 'PcD', false);
-  if (rem.length) rem = fillFrom(rem, () => true, 'AC', true);
-
-  rem = vacated.AC;
-  fillFrom(rem, () => true, 'AC', false);
-
-  for (const insc in assignments){
-    let origin = insc;
-    while (filledSeatOf[origin]) origin = filledSeatOf[origin];
-    assignments[insc].vaga = seatOf[origin];
-  }
-
-  return {assignments, beneficiaryOf, targets: TARGETS[spec]};
+  return list;
 }
 
 
@@ -417,7 +445,6 @@ const CATEGORIAS = [
 ];
 const STATUS_LABELS = {
   '': 'Aguardando',
-  'convocado': 'Convocado',
   'nomeado': 'Nomeado',
   'empossado': 'Empossado',
   'desistente': 'Desistente',
@@ -446,7 +473,10 @@ function normaliza(s){
 let activeSpec = 'TÉCNICO JUDICIÁRIO';
 let activeCat = 'ac';
 const statuses = {};
-const STORAGE_KEY = 'tjrr_analista_ordem_nomeacao_status_v3';
+const vagasBySpec = {};
+SPECIALTIES.forEach(s => { vagasBySpec[s] = baseVagasOf(s); });
+function currentN(){ return vagasBySpec[activeSpec] || baseVagasOf(activeSpec); }
+const STORAGE_KEY = 'tjrr_analista_ordem_nomeacao_status_v4';
 
 const specTabsEl = document.getElementById('specTabs');
 const specTitleEl = document.getElementById('specTitle');
@@ -458,6 +488,8 @@ const emptyState = document.getElementById('emptyState');
 const searchBox = document.getElementById('searchBox');
 const summaryBox = document.getElementById('summaryBox');
 const onlyProvidas = document.getElementById('onlyProvidas');
+const vagasInput = document.getElementById('vagasInput');
+const forecastBox = document.getElementById('forecastBox');
 
 // ---------- Firebase ----------
 const firebaseConfig = {
@@ -592,9 +624,12 @@ function renderSpecTabs(){
 }
 function renderQuotaPanel(result){
   const rows = DATA_ALL[activeSpec];
-  const t = TARGETS[activeSpec];
-  const totalVagas = t.AC + t.Negro + t.PcD + t.Indigena;
-  specTitleEl.textContent = activeSpec + ' — ' + totalVagas + ' vagas · ' + rows.length + ' aprovados';
+  const N = currentN();
+  const t = result.targets;
+  specTitleEl.textContent = activeSpec + ' — ' + N + ' vaga(s) na simulação · ' + rows.length + ' aprovados';
+  vagasInput.max = rows.length;
+  vagasInput.min = 1;
+  vagasInput.value = N;
   const filled = {AC:0, Negro:0, Indigena:0, PcD:0};
   for (const insc in result.assignments) filled[result.assignments[insc].cat]++;
   quotaGridEl.innerHTML =
@@ -602,17 +637,41 @@ function renderQuotaPanel(result){
     '<div>Negro <b>' + filled.Negro + ' / ' + t.Negro + '</b></div>' +
     '<div>PcD <b>' + filled.PcD + ' / ' + t.PcD + '</b></div>' +
     '<div>Indígena <b>' + filled.Indigena + ' / ' + t.Indigena + '</b></div>';
+
+  const forecast = forecastNext(activeSpec, N, 5);
+  const catLbl = {AC:'Ampla', Negro:'Negro', PcD:'PcD', Indigena:'Indígena'};
+  if (forecast.length){
+    forecastBox.innerHTML =
+      '<div class="forecast-title">Próximas 5 vagas (previsão)</div>' +
+      '<div class="forecast-list">' +
+      forecast.map(f => '<div class="forecast-item"><span class="fnum">' + f.vagaNum + 'ª</span><span class="catpill ' + f.cat + '">' + catLbl[f.cat] + '</span></div>').join('') +
+      '</div>';
+  } else {
+    forecastBox.innerHTML = '';
+  }
 }
-function renderCatTabs(){
+function rowMatchesCat(r, catDef, result){
+  const a = result.assignments[r.i];
+  if (a){
+    if (catDef.id === 'ac') return a.cat === 'AC';
+    if (catDef.id === 'negro') return a.cat === 'Negro';
+    if (catDef.id === 'pcd') return a.cat === 'PcD';
+    if (catDef.id === 'indigena') return a.cat === 'Indigena';
+  }
+  // sem vaga na simulação (CR) — mostra pela autodeclaração, pra
+  // continuar aparecendo na fila daquela cota
+  return catDef.match(r.cats);
+}
+function renderCatTabs(result){
   const rows = DATA_ALL[activeSpec];
   const existing = catTabsEl.querySelector('.checkbox-inline');
   catTabsEl.innerHTML = '';
   CATEGORIAS.forEach(cat => {
-    const count = rows.filter(r => cat.match(r.cats)).length;
+    const count = rows.filter(r => rowMatchesCat(r, cat, result)).length;
     const btn = document.createElement('button');
     btn.className = 'cat-tab' + (cat.id === activeCat ? ' active ' + cat.id : '');
     btn.innerHTML = cat.label + ' <span class="cnt">(' + count + ')</span>';
-    btn.addEventListener('click', () => { activeCat = cat.id; renderCatTabs(); renderTable(); });
+    btn.addEventListener('click', () => { activeCat = cat.id; renderTable(); });
     catTabsEl.appendChild(btn);
   });
   if(existing) catTabsEl.appendChild(existing);
@@ -621,31 +680,32 @@ function inscToName(spec, insc){
   const c = DATA_ALL[spec].find(x => x.i === insc);
   return c ? c.n : insc;
 }
-function renderNextUp(){
-  const result = simulate(activeSpec, statuses[activeSpec] || {});
-  const byCat = {AC:[], Negro:[], PcD:[], Indigena:[]};
-  for (const c of DATA_ALL[activeSpec]){
-    const a = result.assignments[c.i];
-    const st = (statuses[activeSpec] || {})[c.i];
-    if (a && !isFinalSt(st)) byCat[a.cat].push({vaga: a.vaga, nome: c.n, nota: c.nota});
-  }
+function renderNextUp(result){
+  const D = DATA_ALL[activeSpec];
+  const smap = statuses[activeSpec] || {};
+  const usedSet = new Set(Object.keys(result.assignments));
   const cols = [
-    {key:'AC', label:'Ampla Concorrência'},
-    {key:'Negro', label:'Negro'},
-    {key:'PcD', label:'PcD'},
-    {key:'Indigena', label:'Indígena'},
+    {key:'AC', label:'Ampla Concorrência', pool: D},
+    {key:'Negro', label:'Negro', pool: D.filter(c => c.cats.includes('Negro'))},
+    {key:'PcD', label:'PcD', pool: D.filter(c => c.cats.includes('PcD'))},
+    {key:'Indigena', label:'Indígena', pool: D.filter(c => c.cats.includes('Indigena'))},
   ];
   nextUpGrid.innerHTML = '';
   cols.forEach(col => {
-    const list = byCat[col.key].slice().sort((a,b) => a.vaga - b.vaga);
+    let next = null;
+    for (const c of col.pool){
+      if (usedSet.has(c.i)) continue;
+      if (isExcludedSt(smap[c.i])) continue;
+      next = c;
+      break;
+    }
     const card = document.createElement('div');
-    if(list.length){
-      const p = list[0];
+    if (next){
       card.className = 'next-up-card ' + col.key;
-      card.innerHTML = '<div class="catlabel">' + col.label + '</div><div class="candname">' + p.nome + '</div><div class="posinfo">' + p.vaga + 'ª vaga desta cota · nota ' + p.nota + '</div>';
+      card.innerHTML = '<div class="catlabel">' + col.label + '</div><div class="candname">' + next.n + '</div><div class="posinfo">' + next.p + 'º colocado por nota · nota ' + next.nota + '</div>';
     } else {
       card.className = 'next-up-card empty ' + col.key;
-      card.textContent = TARGETS[activeSpec][col.key] === 0 ? 'Sem vaga reservada nesta cota' : 'Sem candidatos disponíveis';
+      card.textContent = 'Sem candidatos disponíveis nesta cota';
     }
     nextUpGrid.appendChild(card);
   });
@@ -653,13 +713,12 @@ function renderNextUp(){
 function updateSummary(result){
   const rows = DATA_ALL[activeSpec] || [];
   const st = statuses[activeSpec] || {};
-  const counts = {convocado:0, nomeado:0, empossado:0, desistente:0, final_fila:0, posse_sem_efeito:0};
+  const counts = {nomeado:0, empossado:0, desistente:0, final_fila:0, posse_sem_efeito:0};
   rows.forEach(r => { const s = statusValue(st[r.i]); if(s && counts.hasOwnProperty(s)) counts[s]++; });
   const totalVagas = Object.values(result.targets).reduce((a,b)=>a+b,0);
   const providas = Object.keys(result.assignments).filter(insc => PROVIDA_STATUSES.includes(statusValue(st[insc]))).length;
   summaryBox.innerHTML =
     '<b>' + providas + '</b> de <b>' + totalVagas + '</b> vaga(s) providas nesta simulação.<br>' +
-    '<span class="status-pill" style="background:#E7EEF6;color:var(--convocado);">Convocados: ' + counts.convocado + '</span>' +
     '<span class="status-pill" style="background:#E3F0EA;color:var(--nomeado);">Nomeados: ' + counts.nomeado + '</span>' +
     '<span class="status-pill" style="background:#E3F0EA;color:var(--nomeado);">Empossados: ' + counts.empossado + '</span>' +
     '<span class="status-pill" style="background:#FBE9E7;color:var(--desistente);">Desistentes: ' + counts.desistente + '</span>' +
@@ -667,12 +726,14 @@ function updateSummary(result){
     '<span class="status-pill" style="background:#FBE9E7;color:var(--desistente);">Posse sem Efeito: ' + counts.posse_sem_efeito + '</span>';
 }
 function renderTable(){
-  const result = simulate(activeSpec, statuses[activeSpec] || {});
+  const result = simulate(activeSpec, currentN(), statuses[activeSpec] || {});
   renderQuotaPanel(result);
+  renderCatTabs(result);
+  renderNextUp(result);
   updateSummary(result);
 
   const catDef = CATEGORIAS.find(c => c.id === activeCat) || CATEGORIAS[0];
-  const allRows = DATA_ALL[activeSpec].filter(r => catDef.match(r.cats));
+  const allRows = DATA_ALL[activeSpec].filter(r => rowMatchesCat(r, catDef, result));
   const st = statuses[activeSpec] || {};
   tbody.innerHTML = '';
 
@@ -710,10 +771,13 @@ function renderTable(){
     } else if (assign){
       ordemCell = '<span class="ordernum">' + assign.vaga + 'ª</span>';
       if (assign.reverted) noteHtml = '<div class="reassign-note warn">cota sem candidatos suficientes; revertida à ampla</div>';
-      const origInsc = Object.keys(result.beneficiaryOf).find(k => result.beneficiaryOf[k] === r.i);
-      if (origInsc){
-        const sOrig = statusValue((statuses[activeSpec]||{})[origInsc]);
-        noteHtml += '<div class="reassign-note to">assumiu a vaga de ' + inscToName(activeSpec, origInsc) + ', que ' + (STATUS_MOTIVO[sOrig]||'liberou a vaga') + '</div>';
+      const origens = Object.keys(result.beneficiaryOf).filter(k => result.beneficiaryOf[k] === r.i);
+      if (origens.length){
+        const partes = origens.map(origInsc => {
+          const sOrig = statusValue((statuses[activeSpec]||{})[origInsc]);
+          return inscToName(activeSpec, origInsc) + ' (' + (STATUS_MOTIVO[sOrig]||'liberou a vaga') + ')';
+        });
+        noteHtml += '<div class="reassign-note to">assumiu a vaga de ' + partes.join('; ') + '</div>';
       }
     }
     tdOrdem.innerHTML = ordemCell + noteHtml;
@@ -762,7 +826,6 @@ function renderTable(){
       else { statuses[activeSpec][r.i] = {status: sel.value, date: dateInput.value || ''}; }
       salvarNoFirestore();
       renderTable();
-      renderNextUp();
     }
     sel.addEventListener('change', salvarStatus);
     dateInput.addEventListener('change', () => {
@@ -790,12 +853,18 @@ function applyFilter(){
 }
 searchBox.addEventListener('input', applyFilter);
 onlyProvidas.addEventListener('change', applyFilter);
+vagasInput.addEventListener('change', () => {
+  let v = parseInt(vagasInput.value, 10) || 1;
+  const max = DATA_ALL[activeSpec].length;
+  if (v < 1) v = 1;
+  if (v > max) v = max;
+  vagasBySpec[activeSpec] = v;
+  renderTable();
+});
 
 function renderAll(){
   renderCargoTabs();
   renderSpecTabs();
-  renderCatTabs();
-  renderNextUp();
   renderTable();
 }
 renderAll();
