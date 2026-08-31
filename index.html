@@ -192,12 +192,12 @@ footer .rights{font-weight:600;color:var(--navy);}
 <table>
 <thead>
 <tr>
-  <th style="width:44px;">Pos.</th>
-  <th style="width:100px;">Ordem de Nomeação</th>
+  <th style="width:60px;">Classif. Original</th>
+  <th style="width:110px;">Ordem em que foi Nomeado</th>
+  <th style="width:120px;">Vaga que está Preenchendo</th>
   <th>Candidato \ Nasc.</th>
   <th style="width:55px;">Nota</th>
   <th style="width:130px;">Autodeclaração</th>
-  <th style="width:150px;">Cota</th>
   <th style="width:190px;">Situação</th>
 </tr>
 </thead>
@@ -250,188 +250,207 @@ function statusDate(st){ return (st && typeof st === 'object') ? (st.date || '')
 function isExcludedSt(st){ return VACATING_STATUSES.includes(statusValue(st)); }
 function isFinalSt(st){ return FINAL_STATUSES.includes(statusValue(st)); }
 
+// ============================================================
+// MOTOR DE SIMULAÇÃO — TABELA DE POSIÇÕES FIXAS DE COTA
 // ------------------------------------------------------------
-// Categorização canônica: independe de status (nunca muda por
-// causa de desistência de outro candidato). Segue exatamente
-// os itens 8.13/8.14/6.7/9.11 do Edital:
-//   1) Ampla Concorrência é preenchida pelos TOP N (N=targets.AC)
-//      da classificação geral, por mérito puro, INDEPENDENTE de
-//      autodeclaração de cota. Um candidato negro que já entra
-//      pela ampla não consome a vaga reservada (8.14).
-//   2) As vagas reservadas (Indígena > Negro > PcD, da mais
-//      escassa pra mais numerosa) são preenchidas pelos melhores
-//      autodeclarados daquela cota que ainda não tenham vaga.
-//   3) Cota sem candidato suficiente reverte: Indígena -> Negro
-//      -> PcD -> ampla (item 9.10); Negro e PcD revertem direto
-//      pra ampla (itens 8.11 e 6.12).
-// ------------------------------------------------------------
-// ------------------------------------------------------------
-// Fórmula geral (usada apenas para extrapolar ALÉM do número
-// oficial do Edital): 20% negro, 10% PcD (sempre arredondado
-// pra cima), 3% indígena (só a partir de N>=10). Confirmado
-// que bate com a tabela oficial do item 3 em todos os casos,
-// EXCETO Apoio à Gestão em N=10 (a FGV arredondou Indígena pra
-// cima mesmo com fração <0,5) — por isso SEMPRE usamos os
-// números oficiais fixos quando N é igual ao valor do Edital,
-// e só usamos a fórmula para N diferente disso.
+// Em vez de calcular só a PROPORÇÃO de vagas por cota, o Edital
+// segue uma tabela de POSIÇÕES FIXAS: a Xª vaga aberta é sempre
+// reservada à mesma cota, independentemente de quem esteja
+// classificado nela.
+//   Negro (20%):   3ª, 8ª, 13ª, 18ª, 23ª...      (a cada 5)
+//   PcD (10%):     5ª, 11ª, 21ª, 31ª...          (5ª isolada, depois a cada 10)
+//   Indígena (3%): 10ª, 50ª, 84ª, 117ª, 150ª...  (reserva só a partir da 10ª
+//                  vaga, item 9.1.2; primeira posição garantida na 10ª,
+//                  demais pela fração acumulada de 3% arredondada)
 // ------------------------------------------------------------
 function roundHalfUp(x){ return Math.floor(x + 0.5); }
-function computeTargetsForN(N){
-  const indigena = N >= 10 ? roundHalfUp(N * 0.03) : 0;
-  const negro = N >= 3 ? roundHalfUp(N * 0.20) : 0;
-  const pcd = Math.ceil(N * 0.10);
-  const ac = Math.max(0, N - indigena - negro - pcd);
-  return {AC: ac, Negro: negro, Indigena: indigena, PcD: pcd};
+function buildSchedule(maxK){
+  const negro = [];
+  { let pos = 3; while (pos <= maxK){ negro.push(pos); pos += 5; } }
+  const pcd = [];
+  { let pos = 5; pcd.push(pos); pos = 11; while (pos <= maxK){ pcd.push(pos); pos += 10; } }
+  const indigena = [];
+  { let N = 10, target = 0;
+    while (N <= maxK){
+      const newTarget = Math.max(1, roundHalfUp(N * 0.03));
+      if (newTarget > target){ indigena.push(N); target = newTarget; }
+      N++;
+    }
+  }
+  return {negro, pcd, indigena};
+}
+const SCHEDULE_MAX = 4000;
+const SCHEDULE = buildSchedule(SCHEDULE_MAX);
+function pureCategoryAt(k){
+  if (SCHEDULE.negro.includes(k)) return 'Negro';
+  if (SCHEDULE.pcd.includes(k)) return 'PcD';
+  if (SCHEDULE.indigena.includes(k)) return 'Indigena';
+  return 'AC';
 }
 function baseVagasOf(spec){
   const t = TARGETS[spec];
   return t.AC + t.Negro + t.Indigena + t.PcD;
 }
-function getTargetsFor(spec, N){
-  if (N === baseVagasOf(spec)) return TARGETS[spec];
-  return computeTargetsForN(N);
+// ------------------------------------------------------------
+// AJUSTE por especialidade: em N pequeno, a tabela de posições
+// fixas pura pode não "abrir" ainda alguma cota que o quadro-
+// resumo do item 3.1 do Edital já garante (ex.: com N=3, a 1ª
+// posição de PcD só cairia na 5ª vaga). Nesses casos, convertemos
+// a(s) última(s) vaga(s) de ampla concorrência (dentro do N
+// oficial da especialidade) para a cota que está faltando, na
+// ordem de prioridade Indígena > Negro > PcD — só o necessário
+// pra bater exatamente com o quadro-resumo oficial. Acima do N
+// oficial, a tabela de posições fixas volta a valer pura, sem
+// ajuste (não há quadro-resumo publicado além do Edital).
+// ------------------------------------------------------------
+const overridesCache = {};
+function getOverrides(spec){
+  if (overridesCache[spec]) return overridesCache[spec];
+  const baseN = baseVagasOf(spec);
+  const official = TARGETS[spec];
+  const pure = {AC:0, Negro:0, PcD:0, Indigena:0};
+  for (let k = 1; k <= baseN; k++) pure[pureCategoryAt(k)]++;
+  const acPositions = [];
+  for (let k = 1; k <= baseN; k++){ if (pureCategoryAt(k) === 'AC') acPositions.push(k); }
+  const overrides = {};
+  ['Indigena','Negro','PcD'].forEach(cat => {
+    let deficit = (official[cat]||0) - (pure[cat]||0);
+    while (deficit > 0 && acPositions.length){
+      const pos = acPositions.pop();
+      overrides[pos] = cat;
+      deficit--;
+    }
+  });
+  overridesCache[spec] = overrides;
+  return overrides;
+}
+function scheduleCategoryAt(spec, k){
+  const ov = getOverrides(spec);
+  if (ov[k]) return ov[k];
+  return pureCategoryAt(k);
+}
+function computeTargets(spec, N){
+  const t = {AC:0, Negro:0, PcD:0, Indigena:0};
+  for (let k = 1; k <= N; k++) t[scheduleCategoryAt(spec, k)]++;
+  return t;
 }
 
 // ------------------------------------------------------------
-// runAllocation(): motor único, usado tanto pra categorização
-// canônica (smap vazio) quanto pra simulação com status
-// (smap preenchido) — evita duplicar a lógica de repasse.
-// Segue os itens 8.13/8.14/6.7/9.11 do Edital:
-//   1) Ampla Concorrência é preenchida pelos TOP N da
-//      classificação geral, por mérito puro, pulando quem
-//      estiver com status de vacância.
-//   2) As vagas reservadas (Indígena > Negro > PcD, da mais
-//      escassa pra mais numerosa) são preenchidas pelos
-//      melhores autodeclarados daquela cota ainda não usados.
-//   3) CORREÇÃO AUTOMÁTICA (swap): se uma cota ficaria sem
-//      candidato só porque o(s) candidato(s) dela já foram
-//      "presos" na ampla por mérito, o sistema troca: tira o
-//      candidato da ampla, coloca na cota, e repõe a vaga da
-//      ampla com o próximo da fila geral. Isso evita reverter
-//      uma cota pra ampla quando, na real, existe candidato
-//      dela disponível — só que ele estava computado na ampla.
-//   4) Só depois de tentar a troca é que a cota reverte de
-//      verdade: Indígena -> Negro -> PcD -> ampla (item 9.10);
-//      Negro e PcD revertem direto pra ampla (itens 8.11/6.12).
+// computeCanonical(): a categoria/vaga de cada candidato como se
+// NINGUÉM tivesse status especial — percorre as posições 1..N na
+// ordem da tabela de posições fixas (já com os ajustes acima), e
+// em cada uma toma o melhor colocado ainda disponível daquela
+// cota (ou da ampla, se a cota não tiver mais candidatos). É essa
+// numeração "de baseline" que aparece pra quem desistiu/teve
+// posse sem efeito, mostrando qual vaga ela ocuparia.
 // ------------------------------------------------------------
-function runAllocation(spec, N, smap){
+const canonicalCache = {};
+function computeCanonical(spec, N){
+  const key = spec + '|' + N;
+  if (canonicalCache[key]) return canonicalCache[key];
+  const D = DATA_ALL[spec];
+  const used = new Set();
+  const queues = {
+    AC: D,
+    Negro: D.filter(c => c.cats.includes('Negro')),
+    PcD: D.filter(c => c.cats.includes('PcD')),
+    Indigena: D.filter(c => c.cats.includes('Indigena')),
+  };
+  const ptr = {AC:0, Negro:0, PcD:0, Indigena:0};
+  function nextFrom(cat){
+    const q = queues[cat];
+    while (ptr[cat] < q.length && used.has(q[ptr[cat]].i)) ptr[cat]++;
+    if (ptr[cat] < q.length){ const c = q[ptr[cat]]; ptr[cat]++; return c; }
+    return null;
+  }
+  const assignments = {};
+  for (let k = 1; k <= N; k++){
+    const originalCat = scheduleCategoryAt(spec, k);
+    let cat = originalCat, c = nextFrom(cat), reverted = false;
+    if (!c && cat !== 'AC'){
+      reverted = true;
+      if (originalCat === 'Indigena'){
+        cat = 'Negro'; c = nextFrom('Negro');
+        if (!c){ cat = 'PcD'; c = nextFrom('PcD'); }
+        if (!c){ cat = 'AC'; c = nextFrom('AC'); }
+      } else {
+        cat = 'AC'; c = nextFrom('AC');
+      }
+    }
+    if (c){ assignments[c.i] = {cat, vaga:k, reverted}; used.add(c.i); }
+  }
+  canonicalCache[key] = assignments;
+  return assignments;
+}
+
+// ------------------------------------------------------------
+// simulate(): recalcula do zero a cada chamada quem ocupa cada
+// posição 1..N, pulando qualquer candidato com status de vacância
+// — inclusive quando esse candidato é, ele mesmo, um substituto de
+// alguém que já tinha desistido antes. Isso resolve cadeias de
+// desistência de qualquer tamanho (A desiste → B assume → B também
+// desiste → C assume, e assim por diante).
+//
+// beneficiaryOf é resolvido dentro de cada fila de categoria: todo
+// candidato pulado (status de vacância) entra numa lista de
+// pendentes até que o próximo candidato válido DAQUELA fila seja
+// encontrado — nesse momento TODOS os pendentes acumulados (podem
+// ser vários, em cadeia) apontam para esse mesmo beneficiário.
+// ------------------------------------------------------------
+function simulate(spec, N, smap){
   smap = smap || {};
   const D = DATA_ALL[spec];
-  const t = getTargetsFor(spec, N);
   const used = new Set();
-  const assignments = {};
+  const queues = {
+    AC: D,
+    Negro: D.filter(c => c.cats.includes('Negro')),
+    PcD: D.filter(c => c.cats.includes('PcD')),
+    Indigena: D.filter(c => c.cats.includes('Indigena')),
+  };
+  const ptr = {AC:0, Negro:0, PcD:0, Indigena:0};
+  const pending = {AC:[], Negro:[], PcD:[], Indigena:[]};
   const beneficiaryOf = {};
 
-  function fillQueue(pool, target, catLabel, reverted, initialPending){
-    let filled = 0;
-    let pending = initialPending ? initialPending.slice() : [];
-    for (const c of pool){
-      if (filled >= target) break;
+  function nextFrom(cat){
+    const q = queues[cat];
+    while (ptr[cat] < q.length){
+      const c = q[ptr[cat]];
+      ptr[cat]++;
       if (used.has(c.i)) continue;
-      if (isExcludedSt(smap[c.i])) { pending.push(c.i); continue; }
-      assignments[c.i] = {cat: catLabel, reverted: reverted};
-      used.add(c.i);
-      filled++;
-      for (const p of pending) beneficiaryOf[p] = c.i;
-      pending = [];
-    }
-    return {short: target - filled, pending};
-  }
-
-  function trySwap(catName, reverted){
-    for (let idx = D.length - 1; idx >= 0; idx--){
-      const c = D[idx];
-      const a = assignments[c.i];
-      if (a && a.cat === 'AC' && !a.reverted && c.cats.includes(catName)){
-        delete assignments[c.i];
-        used.delete(c.i);
-        assignments[c.i] = {cat: catName, reverted: !!reverted};
-        used.add(c.i);
-        for (const cc of D){
-          if (used.has(cc.i)) continue;
-          if (isExcludedSt(smap[cc.i])) continue;
-          assignments[cc.i] = {cat:'AC', reverted:false};
-          used.add(cc.i);
-          break;
-        }
-        return c.i;
-      }
+      if (isExcludedSt(smap[c.i])){ pending[cat].push(c.i); continue; }
+      for (const p of pending[cat]) beneficiaryOf[p] = c.i;
+      pending[cat] = [];
+      return c;
     }
     return null;
   }
-  function fillWithSwap(pool, target, catLabel, reverted, initialPending){
-    let r = fillQueue(pool, target, catLabel, reverted, initialPending);
-    while (r.short > 0){
-      const swapped = trySwap(catLabel, reverted);
-      if (!swapped) break;
-      if (r.pending.length){ for (const p of r.pending) beneficiaryOf[p] = swapped; r.pending = []; }
-      r.short -= 1;
+
+  const assignments = {};
+  for (let k = 1; k <= N; k++){
+    const originalCat = scheduleCategoryAt(spec, k);
+    let cat = originalCat, c = nextFrom(cat), reverted = false;
+    if (!c && cat !== 'AC'){
+      reverted = true;
+      if (originalCat === 'Indigena'){
+        cat = 'Negro'; c = nextFrom('Negro');
+        if (!c){ cat = 'PcD'; c = nextFrom('PcD'); }
+        if (!c){ cat = 'AC'; c = nextFrom('AC'); }
+      } else {
+        cat = 'AC'; c = nextFrom('AC');
+      }
     }
-    return r;
+    if (c){ assignments[c.i] = {cat, vaga:k, reverted}; used.add(c.i); }
   }
 
-  // 1) Ampla concorrência por mérito puro (item 8.14)
-  fillQueue(D, t.AC, 'AC', false);
-
-  // 2) Indígena, com correção automática e reversão em cascata
-  let r = fillWithSwap(D.filter(c => c.cats.includes('Indigena')), t.Indigena, 'Indigena', false);
-  if (r.short > 0) r = fillWithSwap(D.filter(c => c.cats.includes('Negro')), r.short, 'Negro', true, r.pending);
-  if (r.short > 0) r = fillWithSwap(D.filter(c => c.cats.includes('PcD')), r.short, 'PcD', true, r.pending);
-  if (r.short > 0) r = fillQueue(D, r.short, 'AC', true, r.pending);
-
-  // 3) Negro, com correção automática, revertendo pra ampla se esgotar
-  let rn = fillWithSwap(D.filter(c => c.cats.includes('Negro')), t.Negro, 'Negro', false);
-  if (rn.short > 0) rn = fillQueue(D, rn.short, 'AC', true, rn.pending);
-
-  // 4) PcD, com correção automática, revertendo pra ampla se esgotar
-  let rp = fillWithSwap(D.filter(c => c.cats.includes('PcD')), t.PcD, 'PcD', false);
-  if (rp.short > 0) rp = fillQueue(D, rp.short, 'AC', true, rp.pending);
-
-  return {assignments, beneficiaryOf, targets: t};
+  return {assignments, beneficiaryOf, targets: computeTargets(spec, N)};
 }
 
-function computeCanonical(spec, N){
-  return runAllocation(spec, N, {}).assignments;
-}
-function seatNumbersOf(spec, N){
-  const D = DATA_ALL[spec];
-  const canonical = computeCanonical(spec, N);
-  const winners = D.filter(c => canonical[c.i]).sort((a,b) => a.p - b.p);
-  const seatOf = {};
-  winners.forEach((c, idx) => { seatOf[c.i] = idx + 1; });
-  return seatOf;
-}
-function simulate(spec, N, smap){
-  const result = runAllocation(spec, N, smap);
-  const canonical = computeCanonical(spec, N);
-  const seatOf = seatNumbersOf(spec, N);
-  const D = DATA_ALL[spec];
-
-  const canonicalByCat = {AC:[], Negro:[], PcD:[], Indigena:[]};
-  for (const c of D){ const can = canonical[c.i]; if (can) canonicalByCat[can.cat].push(c); }
-  const currentByCat = {AC:[], Negro:[], PcD:[], Indigena:[]};
-  for (const c of D){ const a = result.assignments[c.i]; if (a) currentByCat[a.cat].push(c); }
-  for (const cat of ['AC','Negro','PcD','Indigena']){
-    currentByCat[cat].forEach((c, idx) => {
-      const canonicalCounterpart = canonicalByCat[cat][idx];
-      result.assignments[c.i].vaga = canonicalCounterpart ? seatOf[canonicalCounterpart.i] : null;
-    });
-  }
-  return result;
-}
 function forecastNext(spec, N, count){
   const list = [];
-  let prev = getTargetsFor(spec, N);
   const D = DATA_ALL[spec];
   for (let k = 1; k <= count; k++){
     if (N + k > D.length) break;
-    const next = getTargetsFor(spec, N + k);
-    let cat = 'AC';
-    for (const c of ['Indigena','Negro','PcD','AC']){
-      if ((next[c]||0) > (prev[c]||0)) { cat = c; break; }
-    }
-    list.push({vagaNum: N + k, cat});
-    prev = next;
+    list.push({vagaNum: N + k, cat: scheduleCategoryAt(spec, N + k)});
   }
   return list;
 }
@@ -473,10 +492,11 @@ function normaliza(s){
 let activeSpec = 'TÉCNICO JUDICIÁRIO';
 let activeCat = 'ac';
 const statuses = {};
+const ordemReal = {};
 const vagasBySpec = {};
 SPECIALTIES.forEach(s => { vagasBySpec[s] = baseVagasOf(s); });
 function currentN(){ return vagasBySpec[activeSpec] || baseVagasOf(activeSpec); }
-const STORAGE_KEY = 'tjrr_analista_ordem_nomeacao_status_v4';
+const STORAGE_KEY = 'tjrr_analista_ordem_nomeacao_status_v5';
 
 const specTabsEl = document.getElementById('specTabs');
 const specTitleEl = document.getElementById('specTitle');
@@ -543,22 +563,25 @@ function carregarDoStorageLocal(){
     if(!raw) return;
     const obj = JSON.parse(raw);
     Object.keys(obj.statuses || {}).forEach(k => { statuses[k] = obj.statuses[k] || {}; });
+    Object.keys(obj.ordemReal || {}).forEach(k => { ordemReal[k] = obj.ordemReal[k] || {}; });
   }catch(e){}
 }
 function salvarLocalCache(){
-  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify({statuses})); }catch(e){}
+  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify({statuses, ordemReal})); }catch(e){}
 }
 function aplicarSnapshot(snap){
   if(snap && snap.exists){
     const obj = snap.data() || {};
     Object.keys(statuses).forEach(k => delete statuses[k]);
+    Object.keys(ordemReal).forEach(k => delete ordemReal[k]);
     Object.keys(obj.statuses || {}).forEach(k => { statuses[k] = obj.statuses[k] || {}; });
+    Object.keys(obj.ordemReal || {}).forEach(k => { ordemReal[k] = obj.ordemReal[k] || {}; });
     salvarLocalCache();
   }
 }
 function salvarNoFirestore(){
   setSyncStatus('Salvando…', 'var(--ink-soft)');
-  docRef.set({statuses})
+  docRef.set({statuses, ordemReal})
     .then(() => setSyncStatus('✓ Sincronizado', 'var(--ok)'))
     .catch(err => { console.warn(err); setSyncStatus('⚠ Sem conexão — salvo só localmente', '#B23A2E'); });
   salvarLocalCache();
@@ -726,7 +749,9 @@ function updateSummary(result){
     '<span class="status-pill" style="background:#FBE9E7;color:var(--desistente);">Posse sem Efeito: ' + counts.posse_sem_efeito + '</span>';
 }
 function renderTable(){
-  const result = simulate(activeSpec, currentN(), statuses[activeSpec] || {});
+  const N = currentN();
+  const result = simulate(activeSpec, N, statuses[activeSpec] || {});
+  const canonical = computeCanonical(activeSpec, N);
   renderQuotaPanel(result);
   renderCatTabs(result);
   renderNextUp(result);
@@ -735,6 +760,7 @@ function renderTable(){
   const catDef = CATEGORIAS.find(c => c.id === activeCat) || CATEGORIAS[0];
   const allRows = DATA_ALL[activeSpec].filter(r => rowMatchesCat(r, catDef, result));
   const st = statuses[activeSpec] || {};
+  const ord = ordemReal[activeSpec] || {};
   tbody.innerHTML = '';
 
   if(allRows.length === 0){ emptyState.style.display = 'block'; return; }
@@ -746,6 +772,7 @@ function renderTable(){
     const sDate = statusDate(sObj);
     const excluded = isExcludedSt(sObj);
     const assign = result.assignments[r.i];
+    const canon = canonical[r.i];
 
     const tr = document.createElement('tr');
     let rowClass = 'cr';
@@ -759,17 +786,28 @@ function renderTable(){
 
     const tdPos = document.createElement('td'); tdPos.className = 'posnum'; tdPos.textContent = r.p + 'º';
 
-    const tdOrdem = document.createElement('td');
-    let ordemCell = '<span class="catpill CR">CR</span>';
+    const tdOrdemReal = document.createElement('td');
+    const ordemInput = document.createElement('input');
+    ordemInput.type = 'text';
+    ordemInput.className = 'dateInput';
+    ordemInput.placeholder = '—';
+    ordemInput.value = ord[r.i] || '';
+    ordemInput.disabled = !isOwnerGlobal;
+    ordemInput.title = 'Preencha manualmente com a ordem/data real de nomeação, conforme o Diário da Justiça';
+    ordemInput.addEventListener('change', () => {
+      if(!ordemReal[activeSpec]) ordemReal[activeSpec] = {};
+      if (ordemInput.value.trim() === '') delete ordemReal[activeSpec][r.i];
+      else ordemReal[activeSpec][r.i] = ordemInput.value.trim();
+      salvarNoFirestore();
+    });
+    tdOrdemReal.appendChild(ordemInput);
+
+    const tdVaga = document.createElement('td');
+    let vagaCell = '<span class="catpill CR">CR</span>';
     let noteHtml = '';
-    if (excluded){
-      ordemCell = '<span class="catpill CR">—</span>';
-      const benef = result.beneficiaryOf[r.i];
-      noteHtml = benef
-        ? '<div class="reassign-note from">' + (STATUS_MOTIVO[s]||'vacância') + ': vaga repassada a ' + inscToName(activeSpec, benef) + '</div>'
-        : '<div class="reassign-note warn">sem novo beneficiário disponível</div>';
-    } else if (assign){
-      ordemCell = '<span class="ordernum">' + assign.vaga + 'ª</span>';
+    if (assign){
+      const lbl = assign.cat === 'Indigena' ? 'Indígena' : assign.cat;
+      vagaCell = '<span class="ordernum">' + assign.vaga + 'ª</span> <span class="catpill ' + assign.cat + '">' + lbl + '</span>';
       if (assign.reverted) noteHtml = '<div class="reassign-note warn">cota sem candidatos suficientes; revertida à ampla</div>';
       const origens = Object.keys(result.beneficiaryOf).filter(k => result.beneficiaryOf[k] === r.i);
       if (origens.length){
@@ -779,8 +817,17 @@ function renderTable(){
         });
         noteHtml += '<div class="reassign-note to">assumiu a vaga de ' + partes.join('; ') + '</div>';
       }
+    } else if (canon){
+      // excluído (ou fora do alcance atual): mostra a vaga que ELE ocuparia
+      // na numeração de base (canônica), com nota de pra quem foi.
+      const lbl = canon.cat === 'Indigena' ? 'Indígena' : canon.cat;
+      vagaCell = '<span class="ordernum" style="opacity:.55;text-decoration:line-through;">' + canon.vaga + 'ª</span> <span class="catpill ' + canon.cat + '" style="opacity:.55;">' + lbl + '</span>';
+      const benef = result.beneficiaryOf[r.i];
+      noteHtml = benef
+        ? '<div class="reassign-note from">' + (STATUS_MOTIVO[s]||'vacância') + ': vaga repassada a ' + inscToName(activeSpec, benef) + '</div>'
+        : (excluded ? '<div class="reassign-note warn">sem novo beneficiário disponível</div>' : '');
     }
-    tdOrdem.innerHTML = ordemCell + noteHtml;
+    tdVaga.innerHTML = vagaCell + noteHtml;
 
     const tdNome = document.createElement('td'); tdNome.className = 'namecell';
     tdNome.textContent = r.n;
@@ -792,14 +839,6 @@ function renderTable(){
 
     const tdNota = document.createElement('td'); tdNota.textContent = r.nota;
     const tdAuto = document.createElement('td'); tdAuto.innerHTML = catLabel(r.cats);
-
-    const tdCota = document.createElement('td');
-    if (!excluded && assign){
-      const lbl = assign.cat === 'Indigena' ? 'Indígena' : assign.cat;
-      tdCota.innerHTML = '<span class="catpill ' + assign.cat + '">' + lbl + '</span>';
-    } else {
-      tdCota.innerHTML = '<span class="catpill CR">—</span>';
-    }
 
     const tdSt = document.createElement('td');
     const sel = document.createElement('select');
@@ -837,7 +876,7 @@ function renderTable(){
 
     tdSt.appendChild(sel);
     tdSt.appendChild(dateInput);
-    tr.appendChild(tdPos); tr.appendChild(tdOrdem); tr.appendChild(tdNome); tr.appendChild(tdNota); tr.appendChild(tdAuto); tr.appendChild(tdCota); tr.appendChild(tdSt);
+    tr.appendChild(tdPos); tr.appendChild(tdOrdemReal); tr.appendChild(tdVaga); tr.appendChild(tdNome); tr.appendChild(tdNota); tr.appendChild(tdAuto); tr.appendChild(tdSt);
     tbody.appendChild(tr);
   });
   applyFilter();
